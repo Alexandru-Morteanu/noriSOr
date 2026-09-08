@@ -73,19 +73,63 @@ pub extern "C" fn rust_main() -> ! {
         // Din clipa asta procesorul poate fi intrerupt oricand.
         cpu::set_intenable(1 << 6);
 
-        let mut ultim: u32 = 0;
+        hw::usb_serial::puts("configurez GPIO 48 (beculetul de pe placa) ca iesire.\r\n");
+        hw::gpio::config(48);
+        hw::gpio::set_output(48);
+
+        hw::gpio::high(48);
+        linie("GPIO48 dupa high = ", hw::gpio::read(48) as u32, "1 = citim exact ce am scris");
+        hw::gpio::low(48);
+        linie("GPIO48 dupa low  = ", hw::gpio::read(48) as u32, "0 = citim exact ce am scris");
+
+        hw::usb_serial::puts("\r\nATENTIE: pinul 48 de pe DevKitC-1 e un LED WS2812\r\n");
+        hw::usb_serial::puts("(adresabil), nu un bec simplu -- un HIGH/LOW nu-l aprinde\r\n");
+        hw::usb_serial::puts("vizibil, ii trebuie un protocol cu impulsuri de ~1us.\r\n");
+        hw::usb_serial::puts("Proba de mai sus verifica doar ca driverul scrie/citeste\r\n");
+        hw::usb_serial::puts("corect -- vezi capcana din README.\r\n\r\n");
+
+        // --- B1: encoder rotativ pe GPIO 4 (CLK), 5 (DT), 6 (SW) ---
+        let mut enc = hw::encoder::Encoder::nou(4, 5, 6);
+        enc.init();
+
+        hw::usb_serial::puts("roteste butonul. apasa-l ca sa vezi ce iese.\r\n\r\n");
+        let mut volum: i32 = 10;
+        bara(volum);
+
         loop {
-            // Citire volatila: valoarea se schimba pe la spatele buclei.
-            let t = core::ptr::addr_of!(TICKS).read_volatile();
-            hw::usb_serial::puts("batai = ");
-            hw::usb_serial::put_u32(t);
-            hw::usb_serial::puts("   (+");
-            hw::usb_serial::put_u32(t.wrapping_sub(ultim));
-            hw::usb_serial::puts(" in ultima secunda)\r\n");
-            ultim = t;
-            hw::timer::delay_us(1_000_000);
+            let ms = core::ptr::addr_of!(TICKS).read_volatile();
+            match enc.actualizeaza(ms) {
+                hw::encoder::Eveniment::Dreapta => {
+                    if volum < 20 { volum += 1; }
+                    bara(volum);
+                }
+                hw::encoder::Eveniment::Stanga => {
+                    if volum > 0 { volum -= 1; }
+                    bara(volum);
+                }
+                hw::encoder::Eveniment::Apasat => {
+                    hw::usb_serial::puts("   [apasat]  pozitie bruta = ");
+                    hw::usb_serial::put_u32(enc.pozitie as u32);
+                    hw::usb_serial::puts("\r\n");
+                }
+                _ => {}
+            }
+            hw::timer::delay_us(500);
         }
     }
+}
+
+unsafe fn bara(v: i32) {
+    hw::usb_serial::puts("volum ");
+    if v < 10 { hw::usb_serial::puts(" "); }
+    hw::usb_serial::put_u32(v as u32);
+    hw::usb_serial::puts("  [");
+    let mut i = 0;
+    while i < 20 {
+        hw::usb_serial::puts(if i < v { "#" } else { "." });
+        i += 1;
+    }
+    hw::usb_serial::puts("]\r\n");
 }
 
 /// Aici ajunge orice exceptie SI orice intrerupere de nivel 1 — pe Xtensa

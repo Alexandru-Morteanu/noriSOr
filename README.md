@@ -9,8 +9,8 @@ sistem de operare construindu-l.
 | | |
 |---|---|
 | Dependențe | **0** |
-| Rânduri sursă | **761** |
-| Încărcat în RAM | **10 952 octeți** |
+| Rânduri sursă | **900** |
+| Încărcat în RAM | **10 952 octeți** (înainte de GPIO — de reverificat) |
 | Ceas CPU | **240 MHz** (de la 20, verificat de trei ori) |
 | Bătaie de sistem | **1000 Hz**, fără derivă |
 
@@ -71,18 +71,18 @@ player/
 ├── build.rs             25 r.  asamblează vectorii, recompilează la nevoie
 ├── run.sh               38 r.  compilează → încarcă → rulează → ascultă
 └── src/
-    ├── main.rs         125 r.  demonstrația + raportul de excepții
+    ├── main.rs         140 r.  demonstrația + raportul de excepții
     ├── cpu.rs           94 r.  registrele procesorului însuși (rsr / wsr)
     ├── boot/
     │   ├── start.rs     47 r.  assembler de la reset + ștergerea .bss
     │   └── vectors.S   191 r.  tabela de vectori + handlerele de fereastră
     └── hw/
-        ├── mod.rs       18 r.  adrese de bază + rd() / wr()
+        ├── mod.rs       19 r.  adrese de bază + rd() / wr()
         ├── wdt.rs       24 r.  oprește cei doi câini de pază
         ├── usb_serial.rs 53 r. text pe USB, octet cu octet
         ├── timer.rs     55 r.  cronometru 1 MHz legat la cristal
         ├── clock.rs     29 r.  ceasul CPU: cristal → PLL
-        └── gpio.rs       0 r.  gol — etapa B
+        └── gpio.rs     123 r.  IO_MUX (funcția pad-ului) + GPIO (nivel, voie de ieșire)
 ```
 
 ### Modelul mental: un registru este o adresă
@@ -315,6 +315,64 @@ ceasuri care nu comunică între ele, care cad pe același adevăr.
 
 ---
 
+## GPIO — două uși pentru un pad
+
+Un pad fizic nu e „automat” GPIO. Trece prin două periferice diferite, la
+două adrese diferite, și fiecare are treaba lui:
+
+```
+IO_MUX (0x6000_9000)              GPIO (0x6000_4000)
+alege FUNCȚIA pad-ului      ──▶   aprinde / stinge / citește nivelul
+"funcția 1" = GPIO simplu         doar dacă IO_MUX l-a lăsat liber
+```
+
+### IO_MUX — un registru pe pad, la pas fix
+
+Cele 49 de pad-uri au fiecare registrul lui, la `IO_MUX + 0x04 + 4×n` —
+confirmat direct din structura crate-ului (`gpio(n)`, plaja documentată
+`0x04..0xc8` pentru 49 de intrări de 4 octeți fiecare). Câmpul care
+contează acum:
+
+| Biți | Câmp | Ce face |
+|---|---|---|
+| 12:14 | `MCU_SEL` | funcția pad-ului. 0 = „Funcția 1" — pe S3, uniform GPIO simplu |
+| 9 | `FUN_IE` | intrarea spre chip, activată |
+| 10:11 | `FUN_DRV` | tăria semnalului (0=~5mA … 3=~40mA) |
+
+### GPIO — jumătate de registru pentru fiecare 32 de pini
+
+Moștenire de pe ESP32 original: perifericul GPIO împarte cei 49 de pini în
+două jumătăți, cu registre separate:
+
+| | Pinii 0-31 | Pinii 32-53 |
+|---|---|---|
+| Nivel | `OUT` (+0x04) | `OUT1` (+0x10) |
+| Voie de ieșire | `ENABLE` (+0x20) | `ENABLE1` (+0x2c) |
+| Citire | `IN` (+0x3c) | `IN1` (+0x40) |
+
+Fiecare are perechea ei `_W1TS` / `_W1TC` („write 1 to set/clear") — scrii
+doar bitul pinului tău, restul rămân neatinși. Fără ele, ai avea nevoie de
+citește-modifică-scrie, iar două treburi care ating pini diferiți din
+același registru s-ar putea călca în picioare.
+
+Piciorusul **48** (beculețul de pe placă) cade în a doua jumătate — de-aici
+`OUT1` / `ENABLE1` / `IN1` în driver, în loc de variantele simple.
+
+### Proba — fără niciun fir extra
+
+Configurez pinul 48 ca ieșire, îl ridic, citesc înapoi ce am scris (`read`
+merge și pe o ieșire — arată nivelul fizic al pad-ului, nu „ce am cerut"),
+îl cobor, citesc iar:
+
+```
+GPIO48 dupa high = 00000001   <- 1 = citim exact ce am scris
+GPIO48 dupa low  = 00000000   <- 0 = citim exact ce am scris
+```
+
+Nu se vede niciun bec clipind — și nu e o greșeală, e prima capcană de mai jos.
+
+---
+
 ## Capcane
 
 | Simptom | Ce era de fapt | Reparație |
@@ -332,6 +390,7 @@ ceasuri care nu comunică între ele, care cad pe același adevăr.
 | `s32e: instruction use requires an option` | asamblorul din LLVM nu activează opțiunea de ferestre | vectorii într-un `.S`, asamblat de `xtensa-esp32s3-elf-gcc` din `build.rs` |
 | Citirea de la adresa `0` **nu** dă eroare | nimic nu păzește memoria pe acest cip | folosește `ill` ca test; protecția memoriei e un periferic separat, nepornit |
 | Șiruri Rust rupte după un patch | `re.sub` din Python **procesează** `\r\n` din textul de înlocuire | `str.replace`, sau rescrie fișierul întreg |
+| GPIO48 arată corect în citire, dar nu clipește vizibil | e un LED **WS2812** (adresabil), nu un bec simplu — vrea un protocol serial cu impulsuri de ~1 µs, nu un nivel static | de făcut mai târziu: bit-banging WS2812 pe CCOUNT, sau un LED extern pe un pin liber pentru probe rapide |
 
 **Două lucruri de reținut din raportul de excepție:** `EXCVADDR` e completat *doar*
 la erori de memorie — la orice altceva conține gunoi vechi. Și `a0` ține adresa de
@@ -354,7 +413,8 @@ long`) — nepotrivire de versiuni. Ocolit prin comenzi directe către OpenOCD.
 - [x] **A3.2** — primul text pe USB, driver scris de la zero
 - [x] **A3.3** — cronometru 1 MHz pe cristal + ceas CPU la 240 MHz
 - [x] **A3.4** — tabela de vectori proprie, handlere de fereastră, raport de excepții, bătaie 1000 Hz
-- [ ] **B** — **butoane, LED-uri, GPIO** ← urmează
+- [x] **B1** — driver GPIO: `IO_MUX` (funcția pad-ului) + `GPIO` (nivel, voie de ieșire), pinii 0-31 vs 32-53
+- [ ] **B2** — **butonul rotativ: intrare, întrerupere pe front, anti-zgomot** ← urmează
 - [ ] **A4** — antet de imagine propriu, ca placa să pornească singură din flash
 - [ ] **C** — alocator de memorie, card SD, FAT32
 - [ ] **D** — planificator de sarcini, al doilea nucleu

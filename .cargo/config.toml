@@ -6,4 +6,7 @@ target-dir = "/Users/morteanualexandru/.cargo-target/player"
 build-std = ["core"]
 
 [target.xtensa-esp32s3-none-elf]
-rustflags = ["-C", "link-arg=-Tlinker.ld", "-C", "link-arg=-nostartfiles"]
+rustflags = [
+  "-C", "link-arg=-Tlinker.ld",
+  "-C", "link-arg=-nostartfiles",
+]

@@ -51,3 +51,17 @@ pub unsafe fn put_u32(mut v: u32) {
     }
     flush();
 }
+
+/// Scrie un numar in hexazecimal, mereu pe 8 cifre.
+/// Adresele nu se citesc in zecimal — de aici incolo folosim asta.
+pub unsafe fn put_hex(v: u32) {
+    putb(b'0');
+    putb(b'x');
+    let mut i = 8;
+    while i > 0 {
+        i -= 1;
+        let nib = ((v >> (i * 4)) & 0xF) as u8;
+        putb(if nib < 10 { b'0' + nib } else { b'a' + nib - 10 });
+    }
+    flush();
+}
